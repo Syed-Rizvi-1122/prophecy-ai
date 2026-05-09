@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 1. Users Table [cite: 59-60]
+model User {
+  id           String        @id @default(uuid())
+  fullName     String
+  email        String        @unique
+  passwordHash String?
+  role         UserRole      @default(CUSTOMER)
+  createdAt    DateTime      @default(now())
+  
+  // Relationships
+  properties   Property[]    // Properties listed by an Agent
+  appointments Appointment[] // Appointments made by a Customer
+  transactions Transaction[] // Transactions made by a Buyer
+  aiLogs       AiLog[]       // Tracking AI interactions per user
+  reviews      Review[]      // Reviews written by a Customer
+}
+
+enum UserRole {
+  ADMIN
+  AGENT
+  CUSTOMER
+}
+
+// 2. Locations Table (Normalization) [cite: 72]
+model Location {
+  id         Int        @id @default(autoincrement())
+  city       String
+  area       String
+  zipCode    String
+  properties Property[]
+}
+
+// 3. Categories Table (Normalization) [cite: 72]
+model Category {
+  id         Int        @id @default(autoincrement())
+  name       String     // e.g., 'Residential'
+  type       String     // e.g., 'House', 'Apartment'
+  properties Property[]
+}
+
+// 4. Properties Table [cite: 81-82, 87]
+model Property {
+  id          String      @id @default(uuid())
+  title       String
+  description String      @db.Text
+  price       Decimal     @db.Decimal(15, 2)
+  status      PropertyStatus @default(AVAILABLE)
+  createdAt   DateTime    @default(now())
+
+  // Foreign Keys
+  agentId     String
+  agent       User        @relation(fields: [agentId], references: [id])
+  locationId  Int
+  location    Location    @relation(fields: [locationId], references: [id])
+  categoryId  Int
+  category    Category    @relation(fields: [categoryId], references: [id])
+
+  // Relationships
+  appointments Appointment[]
+  transactions Transaction[]
+  reviews      Review[]
+}
+
+enum PropertyStatus {
+  AVAILABLE
+  SOLD
+  RENTED
+}
+
+// 5. Appointments Table [cite: 58]
+model Appointment {
+  id              String   @id @default(uuid())
+  appointmentDate DateTime
+  status          String   @default("Scheduled")
+  
+  propertyId      String
+  property        Property @relation(fields: [propertyId], references: [id])
+  customerId      String
+  customer        User     @relation(fields: [customerId], references: [id])
+}
+
+// 6. Transactions Table (Mandatory for Transaction Handling) [cite: 99]
+model Transaction {
+  id              String   @id @default(uuid())
+  amount          Decimal  @db.Decimal(15, 2)
+  transactionDate DateTime @default(now())
+
+  propertyId      String
+  property        Property @relation(fields: [propertyId], references: [id])
+  buyerId         String
+  buyer           User     @relation(fields: [buyerId], references: [id])
+}
+
+// 7. AI Logs Table (AI Course Requirement) [cite: 9, 31]
+model AiLog {
+  id               Int      @id @default(autoincrement())
+  queryText        String   @db.Text
+  extractedFilters Json     // Stores the JSON result from Gemini
+  createdAt        DateTime @default(now())
+
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+}
+
+// 8. Reviews Table [cite: 87]
+model Review {
+  id          String   @id @default(uuid())
+  rating      Int      // Should be validated 1-5
+  comment     String   @db.Text
+  createdAt   DateTime @default(now())
+
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id])
+  customerId  String
+  customer    User     @relation(fields: [customerId], references: [id])
+}

@@ -20,6 +20,27 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Prisma + Supabase
+
+This project is configured to use Prisma ORM with Supabase Postgres.
+
+1. Copy `.env.example` to `.env.local`.
+2. Fill in `DATABASE_URL` (pooler connection string for app runtime) and `DIRECT_URL` (direct DB connection for Prisma CLI/migrations).
+3. Generate the Prisma client:
+
+```bash
+npm run prisma:generate
+```
+
+4. Create/apply migrations in development:
+
+```bash
+npm run prisma:migrate -- --name init
+```
+
+Prisma client singleton is available at `src/lib/prisma.ts`.
+Prisma CLI datasource is configured in `prisma.config.ts` (Prisma 7 format).
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

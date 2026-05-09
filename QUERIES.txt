@@ -1,0 +1,269 @@
+================================================================================
+PROPHECY AI — SQL-STYLE QUERY REFERENCE
+================================================================================
+The app uses Prisma Client. Some paths use prisma.$queryRaw / $executeRaw with
+tagged templates (safe parameter binding). Others still use the ORM query API
+(findMany, etc.) where filters are built dynamically (see "RAW SQL IN APPLICATION CODE").
+
+PostgreSQL table names are quoted: "User", not User. Example:
+
+  const rows = await prisma.$queryRaw`SELECT * FROM "User" WHERE "id" = ${id}`;
+
+Note: $queryRaw returns table rows. Nested JSON for APIs (e.g. user inside a log)
+still requires assembling objects in TypeScript from joined columns — that is
+normal for raw SQL and is not the same as Prisma's include().
+
+Placeholders in templates are bound by Prisma (not string concatenation).
+
+Below are typical PostgreSQL equivalents. Dynamic smart-search WHERE clauses
+use ILIKE / OR combinations built from user filters.
+
+--------------------------------------------------------------------------------
+USER
+--------------------------------------------------------------------------------
+
+-- Session / get user by id (get-app-user.ts)
+SELECT "id", "email", "fullName", "role"
+FROM "User"
+WHERE "id" = $1
+LIMIT 1;
+
+-- Login: user by email + password hash check (api/auth/login)
+SELECT *
+FROM "User"
+WHERE "email" = $1
+LIMIT 1;
+
+-- Register admin: check email taken
+SELECT "id"
+FROM "User"
+WHERE "email" = $1
+LIMIT 1;
+
+-- Register admin: insert user
+INSERT INTO "User" ("id", "fullName", "email", "passwordHash", "role", "createdAt")
+VALUES ($1, $2, $3, $4, 'ADMIN', NOW());
+
+-- List users (AGENT caller: only agents)
+SELECT "id", "fullName", "email", "role"
+FROM "User"
+WHERE "role" = 'AGENT'
+ORDER BY "createdAt" DESC;
+
+-- List users (ADMIN: optional role filter)
+SELECT "id", "fullName", "email", "role"
+FROM "User"
+WHERE ($1::"UserRole" IS NULL OR "role" = $1)
+ORDER BY "createdAt" DESC;
+
+-- Create user (admin API)
+INSERT INTO "User" ("id", "fullName", "email", "passwordHash", "role", "createdAt")
+VALUES ($1, $2, $3, $4, $5::"UserRole", NOW());
+
+-- Update user by id
+UPDATE "User"
+SET "fullName" = $2, "email" = $3, "role" = $4::"UserRole", ...
+WHERE "id" = $1;
+
+-- Count admins (before delete)
+SELECT COUNT(*)::bigint AS cnt
+FROM "User"
+WHERE "role" = 'ADMIN';
+
+-- Delete user
+DELETE FROM "User"
+WHERE "id" = $1;
+
+-- Inside property create transaction: validate agent
+SELECT "id", "role"
+FROM "User"
+WHERE "id" = $1
+LIMIT 1;
+
+--------------------------------------------------------------------------------
+PROPERTY (with JOINs where the app uses include)
+--------------------------------------------------------------------------------
+
+-- List all properties (admin API GET) — join agent, location, category
+SELECT
+  p.*,
+  l."id" AS "location_id", l."city", l."area", l."zipCode",
+  c."id" AS "category_id", c."name", c."type",
+  u."id" AS "agent_id", u."fullName", u."email", u."role"
+FROM "Property" p
+INNER JOIN "Location" l ON p."locationId" = l."id"
+INNER JOIN "Category" c ON p."categoryId" = c."id"
+INNER JOIN "User" u ON p."agentId" = u."id"
+ORDER BY p."createdAt" DESC;
+
+-- Portal: available listings only
+SELECT
+  p.*,
+  l."city", l."area", l."zipCode",
+  c."name", c."type"
+FROM "Property" p
+INNER JOIN "Location" l ON p."locationId" = l."id"
+INNER JOIN "Category" c ON p."categoryId" = c."id"
+WHERE p."status" = 'AVAILABLE'
+ORDER BY p."createdAt" DESC;
+
+-- Summarize: one available property by id
+SELECT
+  p.*,
+  l."city", l."area", l."zipCode",
+  c."name", c."type"
+FROM "Property" p
+INNER JOIN "Location" l ON p."locationId" = l."id"
+INNER JOIN "Category" c ON p."categoryId" = c."id"
+WHERE p."id" = $1 AND p."status" = 'AVAILABLE'
+LIMIT 1;
+
+-- AI smart search (simplified — real WHERE is dynamic)
+SELECT
+  p.*,
+  l.*, c.*
+FROM "Property" p
+INNER JOIN "Location" l ON p."locationId" = l."id"
+INNER JOIN "Category" c ON p."categoryId" = c."id"
+WHERE p."status" = 'AVAILABLE'
+  AND ($maxPrice IS NULL OR p."price" <= $maxPrice)
+  AND (/* location: (l."city" ILIKE '%' || $term || '%' OR l."area" ILIKE ...) */)
+  AND (/* optional: title/description ILIKE bedroom patterns */)
+ORDER BY p."createdAt" DESC;
+
+-- Create property (after FK checks in same transaction)
+INSERT INTO "Property" (
+  "id", "title", "description", "price", "status",
+  "agentId", "locationId", "categoryId", "createdAt"
+)
+VALUES ($1, $2, $3, $4, 'AVAILABLE', $5, $6, $7, NOW());
+
+-- Update property
+UPDATE "Property"
+SET "title" = $2, "price" = $3, "description" = $4, "status" = $5::"PropertyStatus", ...
+WHERE "id" = $1;
+
+-- Delete property
+DELETE FROM "Property"
+WHERE "id" = $1;
+
+--------------------------------------------------------------------------------
+LOCATION
+--------------------------------------------------------------------------------
+
+SELECT * FROM "Location" ORDER BY "id" ASC;
+
+SELECT * FROM "Location" WHERE "id" = $1 LIMIT 1;
+
+INSERT INTO "Location" ("city", "area", "zipCode")
+VALUES ($1, $2, $3);
+
+UPDATE "Location"
+SET "city" = $2, "area" = $3, "zipCode" = $4
+WHERE "id" = $1;
+
+DELETE FROM "Location" WHERE "id" = $1;
+
+--------------------------------------------------------------------------------
+CATEGORY
+--------------------------------------------------------------------------------
+
+SELECT * FROM "Category" ORDER BY "id" ASC;
+
+SELECT * FROM "Category" WHERE "id" = $1 LIMIT 1;
+
+INSERT INTO "Category" ("name", "type")
+VALUES ($1, $2);
+
+UPDATE "Category"
+SET "name" = $2, "type" = $3
+WHERE "id" = $1;
+
+DELETE FROM "Category" WHERE "id" = $1;
+
+--------------------------------------------------------------------------------
+AI LOG
+--------------------------------------------------------------------------------
+
+INSERT INTO "AiLog" ("queryText", "extractedFilters", "userId", "createdAt")
+VALUES ($1, $2::jsonb, $3, NOW());
+
+-- Admin AI logs page (newest 400, with user)
+SELECT
+  a.*,
+  u."fullName", u."email", u."role"
+FROM "AiLog" a
+INNER JOIN "User" u ON a."userId" = u."id"
+ORDER BY a."createdAt" DESC
+LIMIT 400;
+
+--------------------------------------------------------------------------------
+DASHBOARD AGGREGATES (admin stats)
+--------------------------------------------------------------------------------
+
+SELECT COUNT(*)::bigint FROM "User" WHERE "role" = 'CUSTOMER';
+SELECT COUNT(*)::bigint FROM "User" WHERE "role" = 'AGENT';
+SELECT COUNT(*)::bigint FROM "User" WHERE "role" = 'ADMIN';
+
+SELECT "status", COUNT(*)::bigint AS "_count__all"
+FROM "Property"
+GROUP BY "status";
+
+SELECT COUNT(*)::bigint FROM "Property";
+
+SELECT COALESCE(SUM("price"), 0) AS "_sum_price"
+FROM "Property"
+WHERE "status" = 'AVAILABLE';
+
+SELECT COUNT(*)::bigint FROM "Location";
+SELECT COUNT(*)::bigint FROM "Category";
+SELECT COUNT(*)::bigint FROM "AiLog";
+
+--------------------------------------------------------------------------------
+TABLES IN SCHEMA (no app queries yet — for reference)
+--------------------------------------------------------------------------------
+
+-- Appointment, Transaction, Review exist in DB; no Prisma calls in src/ yet.
+-- Examples of what you would use:
+-- SELECT * FROM "Appointment" WHERE "customerId" = $1;
+-- SELECT * FROM "Transaction" WHERE "buyerId" = $1;
+-- SELECT * FROM "Review" WHERE "propertyId" = $1;
+
+--------------------------------------------------------------------------------
+NOT SQL (external HTTP)
+--------------------------------------------------------------------------------
+
+-- Groq: POST https://api.groq.com/openai/v1/chat/completions (JSON body)
+-- n8n:  POST <N8N_WEBHOOK_URL> (JSON: title, price, description, status)
+
+--------------------------------------------------------------------------------
+MIGRATIONS
+--------------------------------------------------------------------------------
+
+-- Actual DDL is in prisma/migrations/*/migration.sql (CREATE TABLE, enums, FKs).
+
+--------------------------------------------------------------------------------
+RAW SQL IN APPLICATION CODE (prisma.$queryRaw)
+--------------------------------------------------------------------------------
+
+PostgreSQL identifiers must be quoted: "User", "fullName", etc.
+
+Example:
+  const rows = await prisma.$queryRaw`SELECT * FROM "User" WHERE "email" = ${email}`;
+
+Files currently using $queryRaw:
+  • src/lib/auth/get-app-user.ts — session user lookup
+  • src/app/api/auth/login/route.ts — login row + passwordHash
+  • src/app/api/auth/register-admin/route.ts — duplicate check + INSERT RETURNING
+  • src/lib/admin/dashboard-stats.ts — counts, GROUP BY, SUM
+  • src/app/dashboard/admin/ai-logs/page.tsx — AiLog JOIN User
+
+Still using Prisma ORM (findMany, update, $transaction, …):
+  • api/ai-search, api/search — dynamic WHERE from AI filters (safer with ORM)
+  • properties, users, locations, categories, portal listings, etc.
+
+Nested API shapes from JOINs still need a small TS mapping from flat columns.
+
+================================================================================
+END OF FILE
+================================================================================
