@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { hashPassword } from "@/lib/auth/password";
 import { requireAdmin } from "@/lib/auth/require-admin";
-import { prisma } from "@/lib/prisma";
+import { runPivotalTransaction } from "@/lib/prisma/pivotal-transaction";
 
 type UpdateUserBody = {
   fullName?: string;
@@ -47,19 +47,6 @@ export async function PATCH(
       return NextResponse.json({ error: "No valid fields provided." }, { status: 400 });
     }
 
-    const target = await prisma.user.findUnique({
-      where: { id },
-      select: { id: true, role: true },
-    });
-
-    if (!target) {
-      return NextResponse.json({ error: "User not found." }, { status: 404 });
-    }
-
-    if (target.role === "ADMIN" && payload.role !== undefined) {
-      return NextResponse.json({ error: "Cannot change admin role here." }, { status: 400 });
-    }
-
     const data: {
       fullName?: string;
       email?: string;
@@ -78,20 +65,54 @@ export async function PATCH(
       return NextResponse.json({ error: "No valid fields provided." }, { status: 400 });
     }
 
-    const user = await prisma.user.update({
-      where: { id },
-      data,
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        role: true,
-      },
+    const user = await runPivotalTransaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id },
+        select: { id: true, role: true, email: true },
+      });
+
+      if (!target) {
+        throw new Error("NOT_FOUND");
+      }
+
+      if (target.role === "ADMIN" && payload.role !== undefined) {
+        throw new Error("ADMIN_ROLE");
+      }
+
+      if (payload.email && payload.email !== target.email) {
+        const taken = await tx.user.findFirst({
+          where: { email: payload.email, NOT: { id } },
+          select: { id: true },
+        });
+        if (taken) {
+          throw new Error("EMAIL_TAKEN");
+        }
+      }
+
+      return tx.user.update({
+        where: { id },
+        data,
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+        },
+      });
     });
 
     return NextResponse.json({ user }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    if (message === "NOT_FOUND") {
+      return NextResponse.json({ error: "User not found." }, { status: 404 });
+    }
+    if (message === "EMAIL_TAKEN") {
+      return NextResponse.json({ error: "Email already in use." }, { status: 409 });
+    }
+    if (message === "ADMIN_ROLE") {
+      return NextResponse.json({ error: "Cannot change admin role here." }, { status: 400 });
+    }
     if (message.includes("Password must")) {
       return NextResponse.json({ error: message }, { status: 400 });
     }
@@ -114,21 +135,35 @@ export async function DELETE(
       return NextResponse.json({ error: "You cannot delete your own account." }, { status: 400 });
     }
 
-    const target = await prisma.user.findUnique({
-      where: { id },
-      select: { role: true },
+    await runPivotalTransaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id },
+        select: { role: true },
+      });
+
+      if (!target) {
+        throw new Error("NOT_FOUND");
+      }
+
+      if (target.role === "ADMIN") {
+        const adminCount = await tx.user.count({ where: { role: "ADMIN" } });
+        if (adminCount <= 1) {
+          throw new Error("LAST_ADMIN");
+        }
+      }
+
+      await tx.user.delete({ where: { id } });
     });
 
-    if (target?.role === "ADMIN") {
-      const adminCount = await prisma.user.count({ where: { role: "ADMIN" } });
-      if (adminCount <= 1) {
-        return NextResponse.json({ error: "Cannot delete the last admin." }, { status: 400 });
-      }
-    }
-
-    await prisma.user.delete({ where: { id } });
     return NextResponse.json({ message: "User deleted." }, { status: 200 });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message === "NOT_FOUND") {
+      return NextResponse.json({ error: "User not found." }, { status: 404 });
+    }
+    if (message === "LAST_ADMIN") {
+      return NextResponse.json({ error: "Cannot delete the last admin." }, { status: 400 });
+    }
     console.error("Failed to delete user:", error);
     return NextResponse.json({ error: "Failed to delete user." }, { status: 500 });
   }

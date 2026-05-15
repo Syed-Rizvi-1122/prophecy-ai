@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
+import { runPivotalTransaction } from "@/lib/prisma/pivotal-transaction";
 
 type CreatePropertyBody = {
   title: string;
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
   try {
     const payload = parseCreatePropertyBody(await request.json());
 
-    const createdProperty = await prisma.$transaction(async (tx) => {
+    const createdProperty = await runPivotalTransaction(async (tx) => {
       const agent = await tx.user.findUnique({
         where: { id: payload.agentId },
         select: { id: true, role: true },

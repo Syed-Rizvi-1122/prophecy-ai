@@ -9,7 +9,7 @@ import {
   locationWhereAnyFieldContains,
   parseMaxPriceFilter,
 } from "@/lib/property-search/query-helpers";
-import { prisma } from "@/lib/prisma";
+import { runPivotalTransaction, tryWithSavepoint } from "@/lib/prisma/pivotal-transaction";
 
 const modelOutputSchemaDescription = `Return ONLY one valid JSON object with exactly these keys:
 {
@@ -106,37 +106,47 @@ export async function POST(request: NextRequest) {
     }
 
     const filters = await extractFiltersWithGroq(query);
-    let where = buildPropertyWhere(filters);
 
-    // Prisma include → SQL JOINs to Location and Category for names/fields
-    let properties = await prisma.property.findMany({
-      where,
-      include: {
-        location: true,
-        category: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
+    const { properties, relaxedBedroomFilter } = await runPivotalTransaction(async (tx) => {
+      let where = buildPropertyWhere(filters);
 
-    let relaxedBedroomFilter = false;
-    if (properties.length === 0 && filters.minBedrooms !== null) {
-      where = buildPropertyWhere({ ...filters, minBedrooms: null });
-      properties = await prisma.property.findMany({
+      let rows = await tx.property.findMany({
         where,
-        include: { location: true, category: true },
-        orderBy: { createdAt: "desc" },
+        include: {
+          location: true,
+          category: true,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
       });
-      relaxedBedroomFilter = properties.length > 0;
-    }
 
-    await prisma.aiLog.create({
-      data: {
-        userId: appUser.id,
-        queryText: query,
-        extractedFilters: filters,
-      },
+      let relaxed = false;
+      if (rows.length === 0 && filters.minBedrooms !== null) {
+        where = buildPropertyWhere({ ...filters, minBedrooms: null });
+        rows = await tx.property.findMany({
+          where,
+          include: { location: true, category: true },
+          orderBy: { createdAt: "desc" },
+        });
+        relaxed = rows.length > 0;
+      }
+
+      const logResult = await tryWithSavepoint(tx, "ai_log_insert", async () =>
+        tx.aiLog.create({
+          data: {
+            userId: appUser.id,
+            queryText: query,
+            extractedFilters: filters,
+          },
+        }),
+      );
+
+      if (!logResult.ok) {
+        console.error("AiLog insert failed (search results still returned):", logResult.error);
+      }
+
+      return { properties: rows, relaxedBedroomFilter: relaxed };
     });
 
     const payload = {

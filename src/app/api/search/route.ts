@@ -8,7 +8,7 @@ import {
   locationWhereAnyFieldContains,
   parseMaxPriceFilter,
 } from "@/lib/property-search/query-helpers";
-import { prisma } from "@/lib/prisma";
+import { runPivotalTransaction, tryWithSavepoint } from "@/lib/prisma/pivotal-transaction";
 
 type ExtractedFilters = {
   city: string | null;
@@ -124,36 +124,47 @@ export async function GET(request: NextRequest) {
     const userId = appUser.id;
 
     const filters = await extractFiltersWithGroq(query);
-    let where = buildPropertyWhere(filters);
 
-    let properties = await prisma.property.findMany({
-      where,
-      include: {
-        location: true,
-        category: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
+    const { properties, relaxedBedroomFilter } = await runPivotalTransaction(async (tx) => {
+      let where = buildPropertyWhere(filters);
 
-    let relaxedBedroomFilter = false;
-    if (properties.length === 0 && filters.bedrooms !== null) {
-      where = buildPropertyWhere({ ...filters, bedrooms: null });
-      properties = await prisma.property.findMany({
+      let rows = await tx.property.findMany({
         where,
-        include: { location: true, category: true },
-        orderBy: { createdAt: "desc" },
+        include: {
+          location: true,
+          category: true,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
       });
-      relaxedBedroomFilter = properties.length > 0;
-    }
 
-    await prisma.aiLog.create({
-      data: {
-        userId,
-        queryText: query,
-        extractedFilters: filters,
-      },
+      let relaxed = false;
+      if (rows.length === 0 && filters.bedrooms !== null) {
+        where = buildPropertyWhere({ ...filters, bedrooms: null });
+        rows = await tx.property.findMany({
+          where,
+          include: { location: true, category: true },
+          orderBy: { createdAt: "desc" },
+        });
+        relaxed = rows.length > 0;
+      }
+
+      const logResult = await tryWithSavepoint(tx, "ai_log_insert", async () =>
+        tx.aiLog.create({
+          data: {
+            userId,
+            queryText: query,
+            extractedFilters: filters,
+          },
+        }),
+      );
+
+      if (!logResult.ok) {
+        console.error("AiLog insert failed (search still returned):", logResult.error);
+      }
+
+      return { properties: rows, relaxedBedroomFilter: relaxed };
     });
 
     return NextResponse.json(

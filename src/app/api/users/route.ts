@@ -5,6 +5,7 @@ import { getAppUserFromSession } from "@/lib/auth/get-app-user";
 import { hashPassword } from "@/lib/auth/password";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { prisma } from "@/lib/prisma";
+import { runPivotalTransaction } from "@/lib/prisma/pivotal-transaction";
 
 type CreateUserBody = {
   fullName: string;
@@ -106,32 +107,30 @@ export async function POST(request: NextRequest) {
 
     const payload = parseCreateUserBody(await request.json());
 
-    const existing = await prisma.user.findUnique({
-      where: {
-        email: payload.email,
-      },
-      select: { id: true },
-    });
-
-    if (existing) {
-      return NextResponse.json({ error: "Email already exists." }, { status: 409 });
-    }
-
     const passwordHash = await hashPassword(payload.password);
 
-    const user = await prisma.user.create({
-      data: {
-        fullName: payload.fullName,
-        email: payload.email,
-        passwordHash,
-        role: payload.role,
-      },
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        role: true,
-      },
+    const user = await runPivotalTransaction(async (tx) => {
+      const existing = await tx.user.findUnique({
+        where: { email: payload.email },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new Error("EMAIL_EXISTS");
+      }
+      return tx.user.create({
+        data: {
+          fullName: payload.fullName,
+          email: payload.email,
+          passwordHash,
+          role: payload.role,
+        },
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+        },
+      });
     });
 
     return NextResponse.json(
@@ -143,6 +142,9 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    if (message === "EMAIL_EXISTS") {
+      return NextResponse.json({ error: "Email already exists." }, { status: 409 });
+    }
     const status =
       message.includes("required") ||
       message.includes("Invalid JSON") ||

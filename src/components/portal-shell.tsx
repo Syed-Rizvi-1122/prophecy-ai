@@ -44,6 +44,15 @@ export function PortalShell({ userName, children }: PortalShellProps) {
               <Link href="/portal/listings" className={linkClass("/portal/listings")}>
                 All listings
               </Link>
+              <Link href="/portal/appointments" className={linkClass("/portal/appointments")}>
+                Appointments
+              </Link>
+              <Link href="/portal/purchases" className={linkClass("/portal/purchases")}>
+                Purchases
+              </Link>
+              <Link href="/portal/reviews" className={linkClass("/portal/reviews")}>
+                My reviews
+              </Link>
             </nav>
             <SignOutButton className="rounded-xl border border-slate-600/60 px-4 py-2 text-center text-sm text-slate-300 transition hover:bg-slate-800/70 hover:text-slate-100" />
           </div>
